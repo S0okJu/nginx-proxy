@@ -1,0 +1,11 @@
+[Unit]
+Description=Push nginx-proxy metrics to Pushgateway every 30s
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=30s
+AccuracySec=5s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

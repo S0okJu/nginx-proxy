@@ -1,0 +1,16 @@
+[Unit]
+Description=Nginx Prometheus Exporter
+After=network-online.target nginx.service
+Wants=network-online.target
+Requires=nginx.service
+
+[Service]
+Type=simple
+User=nginx-exporter
+Group=nginx-exporter
+ExecStart=/opt/nginx-exporter/nginx-prometheus-exporter -nginx.scrape-uri=http://127.0.0.1:80/stub_status -web.listen-address=:9113
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

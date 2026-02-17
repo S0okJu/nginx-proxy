@@ -1,0 +1,12 @@
+[Unit]
+Description=Push node + nginx metrics to Pushgateway (oneshot)
+After=network-online.target node_exporter.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/opt/nginx-proxy/.env
+ExecStart=/opt/nginx-proxy/scripts/push-metrics-to-gateway.sh
+
+[Install]
+WantedBy=multi-user.target

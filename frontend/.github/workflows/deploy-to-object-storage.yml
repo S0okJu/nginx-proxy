@@ -1,0 +1,141 @@
+# NHN Cloud 네이티브 Object Storage API (Swift/Identity) 사용.
+# S3 호환 API 서명 이슈 없이 Identity 토큰 + Swift PUT으로 업로드.
+
+name: Deploy to NHN Cloud Object Storage (Swift API)
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      region:
+        description: 'Object Storage 리전 (KR1 장애 시 kr2 선택)'
+        required: false
+        default: 'kr1'
+        type: choice
+        options:
+          - kr1
+          - kr2
+
+env:
+  NODE_VERSION: '18'
+  BUCKET_NAME: 'photo-frontend'
+  # ⚠️ Object Storage(HTTPS)에서 제공 시 상대경로 /api 는 스토리지 도메인으로 붙어 요청이 나감.
+  # API_BASE_URL = 절대 URL (프록시가 HTTP만 쓰면 http://IP/api, HTTPS 쓰면 https://.../api).
+  # 참고: 프록시가 HTTP만 쓰면 HTTPS 페이지(Object Storage)에서 HTTP API 호출 시 브라우저가 Mixed Content로 차단함. 이 경우 프록시에 HTTPS 적용하거나, 프론트를 같은 프록시에서 HTTP로 서빙해야 함.
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    env:
+      NHN_REGION: ${{ github.event.inputs.region || 'kr1' }}
+      # API_BASE_URL(Secret): 절대 URL. HTTP만 쓰면 http://133.186.209.193/api (HTTPS 페이지에서는 Mixed Content로 차단될 수 있음)
+      VITE_API_BASE_URL: ${{ secrets.API_BASE_URL || '/api' }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build application
+        run: npm run build
+        env:
+          VITE_API_BASE_URL: ${{ env.VITE_API_BASE_URL }}
+
+      - name: Verify build output
+        run: |
+          echo "Build completed successfully!"
+          ls -lh dist/
+          du -sh dist/
+          if [ -z "${{ secrets.API_BASE_URL }}" ]; then
+            echo "::warning::API_BASE_URL Secret 미설정. /api 사용 시 Object Storage에서 제공하면 요청이 스토리지 도메인으로 감. GitHub Settings → Secrets에 API_BASE_URL = https://프록시IP/api 로 설정하세요."
+          fi
+
+      - name: Get NHN Identity token
+        id: token
+        env:
+          NHN_AUTH_URL: ${{ secrets.NHN_AUTH_URL }}
+          NHN_TENANT_ID: ${{ secrets.NHN_TENANT_ID }}
+          NHN_USERNAME: ${{ secrets.NHN_USERNAME }}
+          NHN_API_PASSWORD: ${{ secrets.NHN_API_PASSWORD }}
+        run: |
+          if [ -z "$NHN_AUTH_URL" ] || [ -z "$NHN_TENANT_ID" ] || [ -z "$NHN_USERNAME" ] || [ -z "$NHN_API_PASSWORD" ]; then
+            echo "::error::필수 Secret이 비어 있습니다. NHN_AUTH_URL, NHN_TENANT_ID, NHN_USERNAME, NHN_API_PASSWORD 설정하세요."
+            exit 1
+          fi
+          RES=$(curl -s -X POST "${NHN_AUTH_URL%/}/tokens" \
+            -H "Content-Type: application/json" \
+            -d '{"auth":{"tenantId":"'"$NHN_TENANT_ID"'","passwordCredentials":{"username":"'"$NHN_USERNAME"'","password":"'"$NHN_API_PASSWORD"'"}}}')
+          TOKEN=$(echo "$RES" | jq -r '.access.token.id')
+          if [ -z "$TOKEN" ] || [ "$TOKEN" = "null" ]; then
+            echo "Token response (masked): $(echo "$RES" | head -c 200)..." >> $GITHUB_STEP_SUMMARY
+            echo "::error::Identity 토큰 발급 실패. AUTH_URL/TENANT_ID/USERNAME/PASSWORD 확인"
+            exit 1
+          fi
+          echo "token=$TOKEN" >> $GITHUB_OUTPUT
+
+      - name: Upload to Object Storage (Swift API)
+        env:
+          TOKEN: ${{ steps.token.outputs.token }}
+          BASE_URL: https://${{ env.NHN_REGION }}-api-object-storage.nhncloudservice.com/v1/AUTH_${{ secrets.NHN_TENANT_ID }}/${{ env.BUCKET_NAME }}
+        run: |
+          set -e
+          # dist 내 모든 파일 업로드 (디렉터리 구조 유지)
+          while IFS= read -r -d '' f; do
+            obj="${f#dist/}"
+            url="${BASE_URL}/${obj}"
+            url_enc=$(echo "$url" | sed 's/ /%20/g')
+            case "$f" in
+              *.html) ct="text/html" ;;
+              *.js)   ct="application/javascript" ;;
+              *.css)  ct="text/css" ;;
+              *.json) ct="application/json" ;;
+              *.ico)  ct="image/x-icon" ;;
+              *.png)  ct="image/png" ;;
+              *.jpg|*.jpeg) ct="image/jpeg" ;;
+              *.svg)  ct="image/svg+xml" ;;
+              *.woff2) ct="font/woff2" ;;
+              *.woff)  ct="font/woff" ;;
+              *)      ct="application/octet-stream" ;;
+            esac
+            echo "Uploading $obj"
+            curl -sS -X PUT -H "X-Auth-Token: $TOKEN" -H "Content-Type: $ct" \
+              --data-binary "@$f" "$url_enc"
+          done < <(find dist -type f -print0)
+          echo "Upload completed!"
+
+      - name: Set container public read (optional)
+        env:
+          TOKEN: ${{ steps.token.outputs.token }}
+        run: |
+          URL="https://${{ env.NHN_REGION }}-api-object-storage.nhncloudservice.com/v1/AUTH_${{ secrets.NHN_TENANT_ID }}/${{ env.BUCKET_NAME }}"
+          curl -sS -X POST -H "X-Auth-Token: $TOKEN" -H "X-Container-Read: .r:*" "$URL" || true
+
+      - name: Verify deployment
+        env:
+          TOKEN: ${{ steps.token.outputs.token }}
+        run: |
+          URL="https://${{ env.NHN_REGION }}-api-object-storage.nhncloudservice.com/v1/AUTH_${{ secrets.NHN_TENANT_ID }}/${{ env.BUCKET_NAME }}?format=json"
+          echo "Listing objects (first 20):"
+          curl -sS -H "X-Auth-Token: $TOKEN" "$URL" | jq -r '.[].name' 2>/dev/null | head -20 || true
+          echo ""
+          echo "Access URL (example):"
+          echo "https://${{ env.NHN_REGION }}-api-object-storage.nhncloudservice.com/v1/AUTH_<TENANT_ID>/${{ env.BUCKET_NAME }}/index.html"
+
+      - name: Notify deployment status
+        if: always()
+        run: |
+          if [ "${{ job.status }}" == "success" ]; then
+            echo "✅ Deployment successful!"
+          else
+            echo "❌ Deployment failed!"
+          fi

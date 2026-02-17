@@ -1,0 +1,144 @@
+# 비활성화: NHN S3 호환 API는 SignatureDoesNotMatch 이슈로 사용 중단.
+# 배포는 deploy-to-object-storage.yml (Swift API) 사용.
+# 다시 사용하려면 이 파일 이름에서 .disabled 제거하고, deploy-to-object-storage.yml 을 .disabled 하세요.
+
+name: Deploy to NHN Cloud Object Storage (S3 API)
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      region:
+        description: 'Object Storage 리전 (KR1 장애 시 kr2/jp1 선택)'
+        required: false
+        default: 'kr1'
+        type: choice
+        options:
+          - kr1
+          - kr2
+
+env:
+  NODE_VERSION: '18'
+  BUCKET_NAME: 'photo-frontend' # NHN Cloud Object Storage 컨테이너명
+  VITE_API_BASE_URL: '/api' # 프로덕션 API URL
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    env:
+      # push 시에는 기본 kr1, 수동 실행 시 선택한 리전 사용
+      AWS_REGION: ${{ github.event.inputs.region || 'kr1' }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Build application
+        run: npm run build
+        env:
+          VITE_API_BASE_URL: ${{ env.VITE_API_BASE_URL }}
+      
+      - name: Verify build output
+        run: |
+          echo "Build completed successfully!"
+          echo "Build output directory:"
+          ls -lh dist/
+          echo ""
+          echo "Total size:"
+          du -sh dist/
+      
+      # NHN Cloud Object Storage = AWS S3 호환 API (동일 키/시크릿 형식, aws cli 사용)
+      # configure-aws-credentials 액션은 실제 AWS 전용이라 sts.kr1.amazonaws.com 조회 → ENOTFOUND 되므로 수동 설정
+      # 서명(SigV4): NHN이 서명 검증 시 리전을 us-east-1로 기대 → us-east-1 고정. 요청 주소는 아래 --endpoint-url로 NHN(kr1/kr2) 사용
+      - name: Configure AWS credentials for NHN Cloud (S3 API)
+        run: |
+          echo "AWS_ACCESS_KEY_ID=${{ secrets.NHN_S3_ACCESS_KEY }}" >> $GITHUB_ENV
+          echo "AWS_SECRET_ACCESS_KEY=${{ secrets.NHN_S3_SECRET_KEY }}" >> $GITHUB_ENV
+          echo "AWS_DEFAULT_REGION=us-east-1" >> $GITHUB_ENV
+      
+      - name: Upload to Object Storage (S3 API)
+        run: |
+          # S3 sync로 파일 업로드 (--delete: 버킷에만 있고 dist에 없는 파일 삭제 → 재배포 시 깔끔히 교체)
+          aws s3 sync dist/ s3://${{ env.BUCKET_NAME }}/ \
+            --endpoint-url https://${{ env.AWS_REGION }}-api-object-storage.nhncloudservice.com \
+            --delete \
+            --acl public-read \
+            --cache-control "public, max-age=31536000" \
+            --exclude "index.html" \
+            --exclude "share-preview.html"
+          
+          # HTML 파일은 캐시 설정 다르게 (짧게)
+          aws s3 cp dist/index.html s3://${{ env.BUCKET_NAME }}/index.html \
+            --endpoint-url https://${{ env.AWS_REGION }}-api-object-storage.nhncloudservice.com \
+            --acl public-read \
+            --content-type "text/html" \
+            --cache-control "public, max-age=300"
+          
+          if [ -f "dist/share-preview.html" ]; then
+            aws s3 cp dist/share-preview.html s3://${{ env.BUCKET_NAME }}/share-preview.html \
+              --endpoint-url https://${{ env.AWS_REGION }}-api-object-storage.nhncloudservice.com \
+              --acl public-read \
+              --content-type "text/html" \
+              --cache-control "public, max-age=300"
+          fi
+          
+          echo "Upload completed!"
+      
+      - name: Set correct Content-Type for assets
+        run: |
+          # JavaScript 파일
+          aws s3 cp s3://${{ env.BUCKET_NAME }}/assets/ s3://${{ env.BUCKET_NAME }}/assets/ \
+            --endpoint-url https://${{ env.AWS_REGION }}-api-object-storage.nhncloudservice.com \
+            --recursive \
+            --exclude "*" \
+            --include "*.js" \
+            --content-type "application/javascript" \
+            --metadata-directive REPLACE \
+            --acl public-read \
+            --cache-control "public, max-age=31536000"
+          
+          # CSS 파일
+          aws s3 cp s3://${{ env.BUCKET_NAME }}/assets/ s3://${{ env.BUCKET_NAME }}/assets/ \
+            --endpoint-url https://${{ env.AWS_REGION }}-api-object-storage.nhncloudservice.com \
+            --recursive \
+            --exclude "*" \
+            --include "*.css" \
+            --content-type "text/css" \
+            --metadata-directive REPLACE \
+            --acl public-read \
+            --cache-control "public, max-age=31536000"
+      
+      - name: Verify deployment
+        run: |
+          echo "Listing uploaded files..."
+          aws s3 ls s3://${{ env.BUCKET_NAME }}/ \
+            --endpoint-url https://${{ env.AWS_REGION }}-api-object-storage.nhncloudservice.com \
+            --recursive | head -20
+          echo ""
+          echo "Deployment completed successfully!"
+          echo ""
+          echo "Access URL:"
+          echo "https://${{ env.AWS_REGION }}-api-object-storage.nhncloudservice.com/v1/AUTH_<TENANT_ID>/${{ env.BUCKET_NAME }}/index.html"
+          echo ""
+          echo "Or via CDN (if configured):"
+          echo "https://your-cdn-domain.com/"
+      
+      - name: Notify deployment status
+        if: always()
+        run: |
+          if [ "${{ job.status }}" == "success" ]; then
+            echo "✅ Deployment successful!"
+          else
+            echo "❌ Deployment failed!"
+          fi

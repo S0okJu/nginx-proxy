@@ -1,0 +1,64 @@
+# Promtail — nginx-proxy 로그 전송 (Loki)
+# LOKI_URL, INSTANCE_IP: /opt/nginx-proxy/.env 또는 systemd EnvironmentFile
+
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+  log_level: warn
+
+positions:
+  filename: /var/lib/promtail/positions.yaml
+
+clients:
+  - url: ${LOKI_URL}/loki/api/v1/push
+    backoff_config:
+      min_period: 500ms
+      max_period: 5m
+      max_retries: 10
+    batchsize: 1048576
+    batchwait: 1s
+    timeout: 30s
+
+scrape_configs:
+  - job_name: nginx-proxy-access
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job: nginx-proxy
+          app: nginx-proxy
+          log_type: access
+          instance: ${INSTANCE_IP}
+          __path__: /var/log/nginx/nginx-proxy-access.log
+    pipeline_stages:
+      - regex:
+          expression: '^(?P<remote_addr>\S+) \S+ \S+ \[(?P<time_local>[^\]]+)\] "(?P<method>\S+) (?P<uri>\S+) \S+" (?P<status>\d+) (?P<body_bytes_sent>\d+) "(?P<http_referer>[^"]*)" "(?P<http_user_agent>[^"]*)"'
+      - labels:
+          status: status
+      - timestamp:
+          source: time_local
+          format: '02/Jan/2006:15:04:05 -0700'
+
+  - job_name: nginx-proxy-error
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job: nginx-proxy
+          app: nginx-proxy
+          log_type: error
+          instance: ${INSTANCE_IP}
+          __path__: /var/log/nginx/nginx-proxy-error.log
+
+  - job_name: journal
+    journal:
+      json: false
+      max_age: 12h
+      path: /var/log/journal
+      labels:
+        job: systemd
+        instance: ${INSTANCE_IP}
+    relabel_configs:
+      - source_labels: ['__journal__systemd_unit']
+        regex: '(nginx|promtail|node_exporter|nginx-exporter|pushgateway-push)\.service'
+        action: keep
+      - source_labels: ['__journal__systemd_unit']
+        target_label: 'unit'

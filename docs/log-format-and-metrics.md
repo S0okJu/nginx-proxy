@@ -41,6 +41,34 @@
 
 ## 3. Loki에 로그가 안 올라갈 때 점검
 
+### 3.1 로그가 아예 안 보일 때 (체크 순서)
+
+1. **LOKI_URL이 설정돼 있는가**  
+   `apply-env-and-restart.sh`는 **LOKI_URL이 비어 있으면 Promtail을 enable하지 않고** "Promtail disabled (LOKI_URL not set)"만 출력합니다.  
+   → `/opt/nginx-proxy/.env`에 `LOKI_URL="http://<Loki주소>:3100"` 설정 후 다시 `sudo /opt/nginx-proxy/deploy/apply-env-and-restart.sh` 실행.
+
+2. **Promtail이 실제로 떠 있는가**  
+   nginx-proxy 인스턴스에서 `sudo systemctl status promtail` 로 확인.  
+   → `inactive`면 위 1번 확인. `failed`면 `journalctl -u promtail -n 50` 으로 에러 확인.
+
+3. **Loki가 배포돼 있고, nginx-proxy에서 접근 가능한가**  
+   같은 VPC/네트워크에서 `curl -s "${LOKI_URL}/ready"` 등으로 연결 테스트.  
+   → Loki 미배포·방화벽·보안 그룹이면 로그가 전송돼도 도달하지 않음.
+
+4. **Grafana에서 Loki 데이터 소스를 쓰고 있는가**  
+   Grafana → Configuration → Data sources 에서 Loki 추가, URL이 Loki 서버 주소(예: `http://loki:3100`)인지 확인.
+
+5. **Explore에서 올바른 쿼리를 쓰는가**  
+   Grafana Explore에서 데이터 소스 **Loki** 선택 후 예:  
+   `{job="nginx-proxy"}` 또는 `{app="nginx-proxy"}`  
+   access 로그만 보려면 `{job="nginx-proxy", log_type="access"}`.
+
+6. **트래픽이 있어야 access 로그가 쌓인다**  
+   한 번도 요청이 없으면 `nginx-proxy-access.log`가 비어 있고, Loki에도 전송할 내용이 없음.  
+   → 브라우저나 `curl`로 해당 nginx-proxy에 요청을 보낸 뒤 다시 Explore에서 조회.
+
+### 3.2 Loki에 로그가 안 올라갈 때 (상세)
+
 | 원인 | 확인 방법 | 조치 |
 |------|-----------|------|
 | **환경변수 미치환** | Promtail 설정에 `url: ${LOKI_URL}/...` 그대로 있는지, 실제로 치환됐는지 확인 | **conf/promtail.service** 사용 시: `.env` 로드 후 `-config.expand-env=true`로 치환하므로, `.env`에 `LOKI_URL`, `INSTANCE_IP`만 있으면 됨. 다른 방식으로 기동할 때는 envsubst 등으로 미리 치환. |

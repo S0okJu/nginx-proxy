@@ -1,0 +1,18 @@
+# nginx-proxy access/error 로그 로테이트 예시
+# 설치: sudo cp conf/logrotate.nginx-proxy.example /etc/logrotate.d/nginx-proxy
+# (또는 /etc/logrotate.d/ 아래에 내용 추가)
+
+/var/log/nginx/nginx-proxy-access.log
+/var/log/nginx/nginx-proxy-error.log
+{
+    daily
+    rotate 14
+    missingok
+    notifempty
+    compress
+    delaycompress
+    sharedscripts
+    postrotate
+        [ -f /var/run/nginx.pid ] && kill -USR1 $(cat /var/run/nginx.pid) 2>/dev/null || true
+    endscript
+}

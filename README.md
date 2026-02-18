@@ -103,6 +103,12 @@ nginx-proxy/                    ← 이 레포 루트 (프론트 + 프록시 통
 - **업스트림**: `keepalive 32` (backend.upstream.conf)
 - **메인 nginx**: 이미지 빌드 시 `worker_connections` 65535, `worker_processes auto` 적용
 
+## 로그 형식·Loki
+
+- Access 로그: JSON 한 줄(NDJSON). `request_id`, `uri`, `request_time`, `status` 등 — Promtail → Loki 전송.
+- 상세·점검: [docs/log-format-and-metrics.md](docs/log-format-and-metrics.md)
+- 검토 체크리스트: [docs/REVIEW-CHECKLIST.md](docs/REVIEW-CHECKLIST.md)
+
 ## Observability (Promtail, Pushgateway)
 
 이미지에는 다음이 포함됩니다.

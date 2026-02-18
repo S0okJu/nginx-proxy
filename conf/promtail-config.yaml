@@ -46,9 +46,16 @@ scrape_configs:
             request_time: request_time
             upstream_response_time: upstream_response_time
             remote_addr: remote_addr
+      # Loki 라벨 값은 문자열만 허용 — status(숫자)를 문자열로
+      - template:
+          source: status_str
+          template: '{{ .status }}'
+      - template:
+          source: service_str
+          template: '{{ .service }}'
       - labels:
-          status: status
-          service: service
+          status: status_str
+          service: service_str
       - timestamp:
           source: time
           format: RFC3339

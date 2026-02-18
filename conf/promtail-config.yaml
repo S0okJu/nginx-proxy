@@ -1,5 +1,10 @@
 # Promtail — nginx-proxy 로그 전송 (Loki)
 # LOKI_URL, INSTANCE_IP: /opt/nginx-proxy/.env 또는 systemd EnvironmentFile
+#
+# 최적화: 레이블은 app, instance, log_type 만 사용 (카디널리티 최소화).
+# 로그 본문(Line): JSON 그대로 전송 — bytes_sent, request_id, remote_addr,
+#   upstream_response_time, request_uri, uri, status, method, time, service 등
+#   LogQL에서 | json | unwrap 로 필드 접근.
 
 server:
   http_listen_port: 9080
@@ -20,84 +25,31 @@ clients:
     timeout: 30s
 
 scrape_configs:
-  # nginx access: JSON(metrics_json) — request_id, uri, request_time, status → Loki
-  # Grafana: 엔드포인트별 지연( request_time ), 상태코드 분포( status ) 시각화
-  # instance_ip: photo-api와 동일 라벨 → 인스턴스별 필터
-  # 
-  # ⚠️ 카디널리티 최적화:
-  #   - 레이블: status, method, uri만 (low cardinality)
-  #   - 값: request_time, bytes_sent 등은 레이블 아님 (로그 본문에만 존재)
-  #   - request_id, remote_addr 등은 완전히 제외 (high cardinality)
+  # nginx access: 로그 본문 = JSON 한 줄 (모든 상세 정보), 레이블 = app, instance, log_type
   - job_name: nginx-proxy-access
     static_configs:
       - targets: [localhost]
         labels:
-          job: nginx-proxy
           app: nginx-proxy
-          log_type: access
           instance: ${INSTANCE_IP}
-          instance_ip: ${INSTANCE_IP}
+          log_type: access
           __path__: /var/log/nginx/nginx-proxy-access.log
     pipeline_stages:
       - json:
           expressions:
-            # 파싱은 하되, 레이블로 만들지 않을 필드들
-            # (LogQL에서 | json 후 접근 가능)
-            request_id: request_id
             time: time
-            service: service
-            method: method
-            uri: uri
-            request_uri: request_uri
-            status: status
-            request_time: request_time
-            upstream_response_time: upstream_response_time
-            remote_addr: remote_addr
-            bytes_sent: bytes_sent
-      
-      # status를 문자열로 변환 (레이블용)
-      - template:
-          source: status_str
-          template: '{{ .status }}'
-      
-      # method를 문자열로 (레이블용)
-      - template:
-          source: method_str
-          template: '{{ .method }}'
-      
-      # service를 문자열로 (레이블용)
-      - template:
-          source: service_str
-          template: '{{ .service }}'
-      
-      # ⚠️ 핵심 수정: 레이블은 low cardinality만!
-      # uri는 선택사항 - 엔드포인트가 많으면 제외
-      - labels:
-          status: status_str
-          method: method_str
-          service: service_str
-          # uri: uri  ← 주석 처리 (cardinality 높으면)
-      
-      # ❌ 절대 레이블로 만들지 말 것:
-      # - request_id (완전히 unique - 무한 cardinality)
-      # - request_time (각 요청마다 다름)
-      # - bytes_sent (각 요청마다 다름)
-      # - remote_addr (IP마다 다름 - 수천~수만개)
-      # - upstream_response_time (각 요청마다 다름)
-      
       - timestamp:
           source: time
           format: RFC3339
 
+  # nginx error: 레이블만 app, instance, log_type (본문은 원문 그대로)
   - job_name: nginx-proxy-error
     static_configs:
       - targets: [localhost]
         labels:
-          job: nginx-proxy
           app: nginx-proxy
-          log_type: error
           instance: ${INSTANCE_IP}
-          instance_ip: ${INSTANCE_IP}
+          log_type: error
           __path__: /var/log/nginx/nginx-proxy-error.log
 
   - job_name: journal

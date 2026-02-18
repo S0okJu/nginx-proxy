@@ -5,9 +5,11 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+# systemd가 .env를 파싱해 환경변수로 전달 (sh source 대신 — 형식/인코딩 이슈 방지)
+EnvironmentFile=-/opt/nginx-proxy/.env
 ExecStartPre=/bin/sh -c 'test -x /opt/promtail/promtail || { echo "Promtail: binary not found"; exit 1; }'
 ExecStartPre=/bin/sh -c 'test -f /opt/promtail/promtail-config.yaml || { echo "Promtail: config not found"; exit 1; }'
-ExecStart=/bin/sh -c 'set -a; [ -r /opt/nginx-proxy/.env ] && . /opt/nginx-proxy/.env; set +a; test -n "${LOKI_URL}" || { echo "Promtail: LOKI_URL not set, skipping"; exit 0; }; exec /opt/promtail/promtail -config.file=/opt/promtail/promtail-config.yaml -config.expand-env=true'
+ExecStart=/bin/sh -c 'test -n "${LOKI_URL}" || { echo "Promtail: LOKI_URL not set, skipping"; exit 0; }; exec /opt/promtail/promtail -config.file=/opt/promtail/promtail-config.yaml -config.expand-env=true'
 TimeoutStopSec=30
 Restart=on-failure
 RestartSec=5

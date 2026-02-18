@@ -132,6 +132,17 @@ else
   rm -f "$tmp"
 fi
 
+# LOKI_URL 확실히 .env에 반영 (병합 누락/--stdin 경로 대비)
+_LOKI_FINAL="${LOKI_URL:-$DEFAULT_LOKI_URL}"
+if [[ -n "$_LOKI_FINAL" ]]; then
+  sudo touch "$ENV_FILE"
+  # 기존 LOKI_URL 줄 제거 후 한 줄만 추가 (중복/포맷 차이 방지)
+  _escaped="${_LOKI_FINAL//\"/\\\"}"
+  sudo sed -i.bak '/^LOKI_URL=/d' "$ENV_FILE" 2>/dev/null || true
+  printf 'LOKI_URL="%s"\n' "$_escaped" | sudo tee -a "$ENV_FILE" > /dev/null
+  echo "  LOKI_URL forced into $ENV_FILE"
+fi
+
 echo "[2/5] backend.upstream.conf 생성..."
 sudo mkdir -p "$CONF_DIR"
 # 템플릿에서 placeholder 치환
@@ -158,7 +169,7 @@ if systemctl list-unit-files --full promtail.service 2>/dev/null | grep -q promt
   if [[ -n "${LOKI_URL:-}" ]]; then
     sudo systemctl enable promtail 2>/dev/null || true
     sudo systemctl start promtail 2>/dev/null || true
-    echo "  Promtail enabled and started"
+    echo "  Promtail enabled and started (LOKI_URL=$LOKI_URL)"
   else
     echo "  Promtail disabled (LOKI_URL not set)"
   fi

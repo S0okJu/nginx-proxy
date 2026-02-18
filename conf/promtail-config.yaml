@@ -23,6 +23,11 @@ scrape_configs:
   # nginx access: JSON(metrics_json) — request_id, uri, request_time, status → Loki
   # Grafana: 엔드포인트별 지연( request_time ), 상태코드 분포( status ) 시각화
   # instance_ip: photo-api와 동일 라벨 → 인스턴스별 필터
+  # 
+  # ⚠️ 카디널리티 최적화:
+  #   - 레이블: status, method, uri만 (low cardinality)
+  #   - 값: request_time, bytes_sent 등은 레이블 아님 (로그 본문에만 존재)
+  #   - request_id, remote_addr 등은 완전히 제외 (high cardinality)
   - job_name: nginx-proxy-access
     static_configs:
       - targets: [localhost]
@@ -36,6 +41,8 @@ scrape_configs:
     pipeline_stages:
       - json:
           expressions:
+            # 파싱은 하되, 레이블로 만들지 않을 필드들
+            # (LogQL에서 | json 후 접근 가능)
             request_id: request_id
             time: time
             service: service
@@ -46,16 +53,38 @@ scrape_configs:
             request_time: request_time
             upstream_response_time: upstream_response_time
             remote_addr: remote_addr
-      # Loki 라벨 값은 문자열만 허용 — status(숫자)를 문자열로
+            bytes_sent: bytes_sent
+      
+      # status를 문자열로 변환 (레이블용)
       - template:
           source: status_str
           template: '{{ .status }}'
+      
+      # method를 문자열로 (레이블용)
+      - template:
+          source: method_str
+          template: '{{ .method }}'
+      
+      # service를 문자열로 (레이블용)
       - template:
           source: service_str
           template: '{{ .service }}'
+      
+      # ⚠️ 핵심 수정: 레이블은 low cardinality만!
+      # uri는 선택사항 - 엔드포인트가 많으면 제외
       - labels:
           status: status_str
+          method: method_str
           service: service_str
+          # uri: uri  ← 주석 처리 (cardinality 높으면)
+      
+      # ❌ 절대 레이블로 만들지 말 것:
+      # - request_id (완전히 unique - 무한 cardinality)
+      # - request_time (각 요청마다 다름)
+      # - bytes_sent (각 요청마다 다름)
+      # - remote_addr (IP마다 다름 - 수천~수만개)
+      # - upstream_response_time (각 요청마다 다름)
+      
       - timestamp:
           source: time
           format: RFC3339

@@ -20,6 +20,9 @@ clients:
     timeout: 30s
 
 scrape_configs:
+  # nginx access: JSON(metrics_json) — request_id, uri, request_time, status → Loki
+  # Grafana: 엔드포인트별 지연( request_time ), 상태코드 분포( status ) 시각화
+  # instance_ip: photo-api와 동일 라벨 → 인스턴스별 필터
   - job_name: nginx-proxy-access
     static_configs:
       - targets: [localhost]
@@ -28,15 +31,27 @@ scrape_configs:
           app: nginx-proxy
           log_type: access
           instance: ${INSTANCE_IP}
+          instance_ip: ${INSTANCE_IP}
           __path__: /var/log/nginx/nginx-proxy-access.log
     pipeline_stages:
-      - regex:
-          expression: '^(?P<remote_addr>\S+) \S+ \S+ \[(?P<time_local>[^\]]+)\] "(?P<method>\S+) (?P<uri>\S+) \S+" (?P<status>\d+) (?P<body_bytes_sent>\d+) "(?P<http_referer>[^"]*)" "(?P<http_user_agent>[^"]*)"'
+      - json:
+          expressions:
+            request_id: request_id
+            time: time
+            service: service
+            method: method
+            uri: uri
+            request_uri: request_uri
+            status: status
+            request_time: request_time
+            upstream_response_time: upstream_response_time
+            remote_addr: remote_addr
       - labels:
           status: status
+          service: service
       - timestamp:
-          source: time_local
-          format: '02/Jan/2006:15:04:05 -0700'
+          source: time
+          format: RFC3339
 
   - job_name: nginx-proxy-error
     static_configs:
@@ -46,6 +61,7 @@ scrape_configs:
           app: nginx-proxy
           log_type: error
           instance: ${INSTANCE_IP}
+          instance_ip: ${INSTANCE_IP}
           __path__: /var/log/nginx/nginx-proxy-error.log
 
   - job_name: journal
@@ -56,6 +72,7 @@ scrape_configs:
       labels:
         job: systemd
         instance: ${INSTANCE_IP}
+        instance_ip: ${INSTANCE_IP}
     relabel_configs:
       - source_labels: ['__journal__systemd_unit']
         regex: '(nginx|promtail|node_exporter|nginx-exporter|pushgateway-push)\.service'
